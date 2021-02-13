@@ -1,2 +1,3 @@
+include ':hotfix'
 include ':app'
 rootProject.name = "MyHotFix"
