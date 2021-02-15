@@ -2,7 +2,9 @@ package com.rzm.hotfix;
 
 import android.app.Application;
 import android.content.Context;
+import android.content.res.Resources;
 import android.os.Build;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 
@@ -13,6 +15,7 @@ import java.io.InputStream;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.sql.Ref;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -47,6 +50,12 @@ public class MyHotFix {
         mergePatchDexAndAppDex(application, patchFileList);
     }
 
+    /**
+     * 为什么要替换ClassLoader?见微信团队的文档
+     * https://mp.weixin.qq.com/s?__biz=MzAwNDY1ODY2OQ==&mid=2649286341&idx=1&sn=054d595af6e824cbe4edd79427fc2706&scene=0#wechat_redirect
+     * @param application
+     * @param patchDexFileList
+     */
     private static void injectNewClassLoader(Application application, List<File> patchDexFileList) {
         ClassLoader newClassLoader = createNewClassLoader(application, patchDexFileList);
         if (newClassLoader != null && application != null) {
@@ -55,7 +64,35 @@ public class MyHotFix {
     }
 
     private static void injectNewClassLoader(ClassLoader newClassLoader, Application application) {
+        try {
+            //1.给当前线程设置新classloader
+            Thread.currentThread().setContextClassLoader(newClassLoader);
 
+            //2.给ContextImpl设置新classloader(ContextWrapper中)
+            //application继承自ContextWrapper,获取到mBase就是ContextImpl,然后从ContextImpl中找mClassLoader
+            Object baseObj = ReflectUtils.getFieldObj(application, "mBase");
+            Field contextImplClassLoaderField = ReflectUtils.getField(baseObj, "mClassLoader");
+            contextImplClassLoaderField.set(baseObj, newClassLoader);
+
+            //3.给ContextImpl中的mPackageInfo设置新classloader
+            Object packageInfoObj = ReflectUtils.getFieldObj(baseObj, "mPackageInfo");
+            Field packageInfoObjClassLoaderField = ReflectUtils.getField(packageInfoObj, "mClassLoader");
+            packageInfoObjClassLoaderField.set(packageInfoObj, newClassLoader);
+
+            //4.给Resources设置新classloader
+            Resources resources = application.getResources();
+            Field resourcesClassLoaderField = ReflectUtils.getField(resources, "mClassLoader");
+            resourcesClassLoaderField.set(resources, newClassLoader);
+
+            //5.给DrawableInflater设置新classloader
+            Object drawableInflaterObj = ReflectUtils.getFieldObj(resources, "mDrawableInflater");
+            if (drawableInflaterObj != null) {
+                Field drawableInflaterClassLoaderField = ReflectUtils.getField(drawableInflaterObj, "mClassLoader");
+                drawableInflaterClassLoaderField.set(drawableInflaterObj, newClassLoader);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     private static ClassLoader createNewClassLoader(Application application, List<File> patchDexFileList) {
@@ -128,7 +165,11 @@ public class MyHotFix {
 
             combinedLibraryPaths = nativeLibraryDirectoriesBuilder.toString();
 
-            return new PathClassLoader(combinedDexPaths, combinedLibraryPaths, application.getClassLoader());
+            Log.d("MyHotFix", "ClassLoader.getSystemClassLoader() = " + ClassLoader.getSystemClassLoader());
+            Log.d("MyHotFix", "application.getClassLoader() = " + application.getClassLoader());
+            //传入的classloader必须用ClassLoader.getSystemClassLoader()，否则报错
+            //return new PathClassLoader(combinedDexPaths, combinedLibraryPaths, application.getClassLoader());
+            return new PathClassLoader(combinedDexPaths, combinedLibraryPaths, ClassLoader.getSystemClassLoader());
         } catch (Exception e) {
             e.printStackTrace();
         }
